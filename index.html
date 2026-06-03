@@ -1,0 +1,962 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Neon Fruit Ninja</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a1a;
+    overflow: hidden;
+    touch-action: none;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+    font-family: 'Segoe UI', Arial, sans-serif;
+  }
+  canvas { display: block; cursor: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+let W, H;
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+const GRAVITY = 0.22;
+const FRUIT_TYPES = [
+  { name: 'watermelon', color: '#00ff88', inner: '#ff3366', radius: 55, points: 10 },
+  { name: 'orange',     color: '#ff9900', inner: '#ffcc00', radius: 46, points: 10 },
+  { name: 'apple',      color: '#ff2255', inner: '#ffff66', radius: 42, points: 10 },
+  { name: 'kiwi',       color: '#88ff00', inner: '#ccff66', radius: 38, points: 15 },
+  { name: 'grape',      color: '#cc44ff', inner: '#ff88cc', radius: 35, points: 15 },
+  { name: 'lemon',      color: '#ffff00', inner: '#ffffaa', radius: 36, points: 10 },
+  { name: 'peach',      color: '#ff8866', inner: '#ffddaa', radius: 40, points: 12 },
+  { name: 'blueberry',  color: '#4488ff', inner: '#aaccff', radius: 32, points: 20 },
+];
+
+const POWERUP_TYPES = [
+  { name: 'freeze',  emoji: '⏱️', color: '#00ccff', label: '时间冻结', maxUses: 3, duration: 5 },
+  { name: 'slash',   emoji: '⚡', color: '#ff00ff', label: '全屏斩',   maxUses: 2 },
+  { name: 'life',    emoji: '💚', color: '#00ff66', label: '回血',     maxUses: 1 },
+  { name: 'double',  emoji: '✨', color: '#ffcc00', label: '双倍得分', maxUses: 2, duration: 8 },
+];
+
+let fruits = [];
+let particles = [];
+let bladeTrail = [];
+let score = 0;
+let lives = 3;
+let timeLeft = 60;
+let gameState = 'start';
+let lastTime = 0;
+let spawnTimer = 0;
+let powerupSpawnTimer = 8;
+let timerAccum = 0;
+let combo = 0;
+let comboTimer = 0;
+let comboTexts = [];
+let mouseX = -100, mouseY = -100;
+let isSlicing = false;
+let bestScore = 0;
+let screenShake = 0;
+let screenFlash = 0;
+let screenFlashColor = '#fff';
+let bgStars = [];
+let ripples = [];
+let sliceHalves = [];
+let slowMo = 1;
+let slowMoTimer = 0;
+let powerupInventory = {};
+let activeEffects = [];
+let bgPulse = 0;
+let bgPulseColor = '#000';
+
+function initStars() {
+  bgStars = [];
+  for (let i = 0; i < 80; i++) {
+    bgStars.push({
+      x: Math.random() * 2000,
+      y: Math.random() * 2000,
+      r: 0.5 + Math.random() * 1.5,
+      twinkle: Math.random() * Math.PI * 2,
+      speed: 0.5 + Math.random() * 2,
+    });
+  }
+}
+initStars();
+
+function initPowerups() {
+  powerupInventory = {};
+  POWERUP_TYPES.forEach(p => { powerupInventory[p.name] = 0; });
+}
+
+function spawnFruit() {
+  const isBomb = Math.random() < 0.12;
+  const type = isBomb ? null : FRUIT_TYPES[Math.floor(Math.random() * FRUIT_TYPES.length)];
+  const x = W * 0.12 + Math.random() * W * 0.76;
+  const vx = (Math.random() - 0.5) * 3.5;
+  const vy = -(H * 0.013 + Math.random() * H * 0.006);
+  fruits.push({
+    x, y: H + 50,
+    vx, vy,
+    radius: isBomb ? 44 : type.radius,
+    color: isBomb ? '#ff0044' : type.color,
+    inner: isBomb ? '#ffaa00' : type.inner,
+    points: isBomb ? 0 : type.points,
+    isBomb,
+    isPowerup: false,
+    rotation: Math.random() * Math.PI * 2,
+    rotSpeed: (Math.random() - 0.5) * 0.1,
+    sliced: false,
+    opacity: 1,
+    pulse: 0,
+  });
+}
+
+function spawnPowerup() {
+  const type = POWERUP_TYPES[Math.floor(Math.random() * POWERUP_TYPES.length)];
+  if (powerupInventory[type.name] >= type.maxUses) return;
+  const x = W * 0.2 + Math.random() * W * 0.6;
+  const vx = (Math.random() - 0.5) * 2.5;
+  const vy = -(H * 0.012 + Math.random() * H * 0.005);
+  fruits.push({
+    x, y: H + 50,
+    vx, vy,
+    radius: 40,
+    color: type.color,
+    inner: '#ffffff',
+    points: 0,
+    isBomb: false,
+    isPowerup: true,
+    powerupType: type.name,
+    powerupData: type,
+    rotation: 0,
+    rotSpeed: (Math.random() - 0.5) * 0.06,
+    sliced: false,
+    opacity: 1,
+    pulse: 0,
+  });
+}
+
+function spawnParticles(x, y, color, count, big) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 1.5 + Math.random() * (big ? 7 : 4);
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed - 1.5,
+      radius: big ? 2 + Math.random() * 5 : 1.5 + Math.random() * 3,
+      color,
+      life: 1,
+      decay: 0.012 + Math.random() * 0.02,
+    });
+  }
+}
+
+function spawnJuice(x, y, color) {
+  for (let i = 0; i < 8; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 0.8 + Math.random() * 2.5;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      radius: 6 + Math.random() * 10,
+      color,
+      life: 1,
+      decay: 0.015 + Math.random() * 0.018,
+      isJuice: true,
+    });
+  }
+}
+
+function spawnSparkle(x, y, color) {
+  for (let i = 0; i < 12; i++) {
+    const angle = (Math.PI * 2 / 12) * i + Math.random() * 0.3;
+    const speed = 3 + Math.random() * 4;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      radius: 1.5 + Math.random() * 2,
+      color,
+      life: 1,
+      decay: 0.025 + Math.random() * 0.015,
+      isSparkle: true,
+    });
+  }
+}
+
+function addRipple(x, y, color) {
+  ripples.push({ x, y, radius: 5, maxRadius: 120, color, life: 1 });
+}
+
+function addSliceHalf(f) {
+  const angle = Math.random() * Math.PI;
+  for (let side = -1; side <= 1; side += 2) {
+    sliceHalves.push({
+      x: f.x, y: f.y,
+      vx: Math.cos(angle) * side * 2.5 + f.vx,
+      vy: f.vy - 1,
+      radius: f.radius,
+      color: f.color,
+      inner: f.inner,
+      rotation: f.rotation,
+      rotSpeed: side * 0.08,
+      side,
+      sliceAngle: angle,
+      life: 1,
+    });
+  }
+}
+
+function lineCircleIntersect(x1, y1, x2, y2, cx, cy, r) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const fx = x1 - cx, fy = y1 - cy;
+  const a = dx * dx + dy * dy;
+  if (a === 0) return false;
+  const b = 2 * (fx * dx + fy * dy);
+  const c = fx * fx + fy * fy - r * r;
+  let disc = b * b - 4 * a * c;
+  if (disc < 0) return false;
+  disc = Math.sqrt(disc);
+  const t1 = (-b - disc) / (2 * a);
+  const t2 = (-b + disc) / (2 * a);
+  return (t1 >= 0 && t1 <= 1) || (t2 >= 0 && t2 <= 1) || (t1 < 0 && t2 > 1);
+}
+
+function activatePowerup(type) {
+  const pt = POWERUP_TYPES.find(p => p.name === type);
+  if (!pt) return;
+  powerupInventory[type]++;
+
+  if (type === 'freeze') {
+    activeEffects = activeEffects.filter(e => e.type !== 'freeze');
+    activeEffects.push({ type: 'freeze', timer: pt.duration });
+    comboTexts.push({ x: W / 2, y: H * 0.4, text: '⏱️ 时间冻结!', life: 1.5, big: true, color: '#00ccff' });
+    screenFlash = 0.4; screenFlashColor = '#00ccff';
+  } else if (type === 'slash') {
+    const targets = fruits.filter(f => !f.sliced && !f.isBomb && !f.isPowerup);
+    targets.forEach(f => {
+      f.sliced = true;
+      const mult = hasEffect('double') ? 2 : 1;
+      score += f.points * mult;
+      combo++;
+      spawnParticles(f.x, f.y, f.color, 12, false);
+      spawnJuice(f.x, f.y, f.inner);
+      addSliceHalf(f);
+      addRipple(f.x, f.y, '#ff00ff');
+    });
+    comboTimer = 1;
+    screenFlash = 0.5; screenFlashColor = '#ff00ff';
+    comboTexts.push({ x: W / 2, y: H * 0.4, text: '⚡ 全屏斩!', life: 1.5, big: true, color: '#ff00ff' });
+    spawnSparkle(W / 2, H / 2, '#ff00ff');
+  } else if (type === 'life') {
+    lives = Math.min(lives + 1, 5);
+    screenFlash = 0.4; screenFlashColor = '#00ff66';
+    comboTexts.push({ x: W / 2, y: H * 0.4, text: '💚 +1 生命!', life: 1.5, big: true, color: '#00ff66' });
+    spawnParticles(W / 2, H / 2, '#00ff66', 30, true);
+  } else if (type === 'double') {
+    activeEffects = activeEffects.filter(e => e.type !== 'double');
+    activeEffects.push({ type: 'double', timer: pt.duration });
+    comboTexts.push({ x: W / 2, y: H * 0.4, text: '✨ 双倍得分!', life: 1.5, big: true, color: '#ffcc00' });
+    screenFlash = 0.4; screenFlashColor = '#ffcc00';
+  }
+}
+
+function hasEffect(type) {
+  return activeEffects.some(e => e.type === type);
+}
+
+function checkSlice() {
+  if (bladeTrail.length < 2) return;
+  const p1 = bladeTrail[bladeTrail.length - 2];
+  const p2 = bladeTrail[bladeTrail.length - 1];
+  const dx = p2.x - p1.x, dy = p2.y - p1.y;
+  if (dx * dx + dy * dy < 16) return;
+
+  fruits.forEach(f => {
+    if (f.sliced) return;
+    if (lineCircleIntersect(p1.x, p1.y, p2.x, p2.y, f.x, f.y, f.radius)) {
+      f.sliced = true;
+      if (f.isBomb) {
+        lives--;
+        screenShake = 15;
+        screenFlash = 0.6; screenFlashColor = '#ff0044';
+        spawnParticles(f.x, f.y, '#ff0044', 40, true);
+        spawnParticles(f.x, f.y, '#ffaa00', 25, true);
+        spawnParticles(f.x, f.y, '#ffffff', 10, false);
+        addRipple(f.x, f.y, '#ff0044');
+        bgPulse = 0.5; bgPulseColor = '#ff0022';
+        if (lives <= 0) {
+          gameState = 'over';
+          if (score > bestScore) bestScore = score;
+        }
+      } else if (f.isPowerup) {
+        activatePowerup(f.powerupType);
+        spawnSparkle(f.x, f.y, f.color);
+        addRipple(f.x, f.y, f.color);
+      } else {
+        const mult = hasEffect('double') ? 2 : 1;
+        score += f.points * mult;
+        combo++;
+        comboTimer = 0.8;
+        if (combo >= 3) {
+          const bonus = combo * 5 * mult;
+          score += bonus;
+          comboTexts.push({ x: f.x, y: f.y - 40, text: `${combo}x COMBO +${bonus}`, life: 1.2, color: '#ffcc00' });
+          if (combo >= 5) {
+            slowMo = 0.3;
+            slowMoTimer = 0.6;
+            bgPulse = 0.3; bgPulseColor = '#ffcc00';
+          }
+        }
+        spawnParticles(f.x, f.y, f.color, 18, false);
+        spawnJuice(f.x, f.y, f.inner);
+        addSliceHalf(f);
+        addRipple(f.x, f.y, f.color);
+      }
+    }
+  });
+}
+
+function drawFruit(f) {
+  ctx.save();
+  ctx.translate(f.x, f.y);
+  ctx.rotate(f.rotation);
+  ctx.globalAlpha = f.opacity;
+
+  f.pulse = (f.pulse || 0) + 0.08;
+  const pulseScale = f.isPowerup ? 1 + Math.sin(f.pulse) * 0.12 : 1;
+  ctx.scale(pulseScale, pulseScale);
+
+  if (f.isPowerup) {
+    ctx.shadowColor = f.color;
+    ctx.shadowBlur = 35 + Math.sin(f.pulse * 1.5) * 15;
+    ctx.beginPath();
+    ctx.arc(0, 0, f.radius, 0, Math.PI * 2);
+    const grd = ctx.createRadialGradient(0, 0, 0, 0, 0, f.radius);
+    grd.addColorStop(0, '#ffffff');
+    grd.addColorStop(0.4, f.color);
+    grd.addColorStop(1, f.color + '44');
+    ctx.fillStyle = grd;
+    ctx.fill();
+
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = f.opacity * 0.3;
+    ctx.beginPath();
+    ctx.arc(0, 0, f.radius * 1.4, 0, Math.PI * 2);
+    ctx.strokeStyle = f.color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.globalAlpha = f.opacity;
+
+    ctx.font = `${f.radius * 0.85}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(f.powerupData.emoji, 0, 2);
+  } else {
+    ctx.shadowColor = f.color;
+    ctx.shadowBlur = 30;
+    ctx.beginPath();
+    ctx.arc(0, 0, f.radius, 0, Math.PI * 2);
+    ctx.fillStyle = f.color;
+    ctx.fill();
+
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    ctx.arc(0, 0, f.radius * 0.65, 0, Math.PI * 2);
+    ctx.fillStyle = f.inner;
+    ctx.globalAlpha = f.opacity * 0.5;
+    ctx.fill();
+
+    ctx.globalAlpha = f.opacity * 0.25;
+    ctx.beginPath();
+    ctx.arc(-f.radius * 0.2, -f.radius * 0.25, f.radius * 0.22, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+
+    if (f.isBomb) {
+      ctx.globalAlpha = f.opacity;
+      ctx.shadowColor = '#ff0044';
+      ctx.shadowBlur = 20;
+      ctx.fillStyle = '#fff';
+      ctx.font = `bold ${f.radius * 0.85}px Arial`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('💣', 0, 2);
+    }
+  }
+
+  ctx.restore();
+}
+
+function drawSliceHalves() {
+  sliceHalves.forEach(h => {
+    ctx.save();
+    ctx.translate(h.x, h.y);
+    ctx.rotate(h.rotation);
+    ctx.globalAlpha = h.life * 0.8;
+
+    ctx.beginPath();
+    ctx.arc(0, 0, h.radius, h.sliceAngle, h.sliceAngle + Math.PI * h.side);
+    ctx.closePath();
+    ctx.shadowColor = h.color;
+    ctx.shadowBlur = 15;
+    ctx.fillStyle = h.color;
+    ctx.fill();
+
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    ctx.arc(0, 0, h.radius * 0.6, h.sliceAngle, h.sliceAngle + Math.PI * h.side);
+    ctx.closePath();
+    ctx.fillStyle = h.inner;
+    ctx.globalAlpha = h.life * 0.5;
+    ctx.fill();
+
+    ctx.restore();
+  });
+}
+
+function drawBlade() {
+  if (bladeTrail.length < 2) return;
+
+  for (let layer = 2; layer >= 0; layer--) {
+    for (let i = 1; i < bladeTrail.length; i++) {
+      const p0 = bladeTrail[i - 1];
+      const p1 = bladeTrail[i];
+      const t = i / bladeTrail.length;
+      const alpha = t * p1.life;
+      if (alpha <= 0) continue;
+      ctx.save();
+      if (layer === 0) {
+        ctx.globalAlpha = alpha * 0.9;
+        ctx.shadowColor = '#ffffff';
+        ctx.shadowBlur = 4;
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2.5;
+      } else if (layer === 1) {
+        ctx.globalAlpha = alpha * 0.5;
+        ctx.shadowColor = '#00ffff';
+        ctx.shadowBlur = 18;
+        ctx.strokeStyle = '#00ffff';
+        ctx.lineWidth = 7;
+      } else {
+        ctx.globalAlpha = alpha * 0.2;
+        ctx.shadowColor = '#0088ff';
+        ctx.shadowBlur = 35;
+        ctx.strokeStyle = '#0088ff';
+        ctx.lineWidth = 16;
+      }
+      ctx.beginPath();
+      ctx.moveTo(p0.x, p0.y);
+      ctx.lineTo(p1.x, p1.y);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+}
+
+function drawRipples() {
+  ripples.forEach(r => {
+    ctx.save();
+    ctx.globalAlpha = r.life * 0.5;
+    ctx.shadowColor = r.color;
+    ctx.shadowBlur = 10;
+    ctx.strokeStyle = r.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(r.x, r.y, r.radius, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  });
+}
+
+function drawUI() {
+  ctx.save();
+
+  ctx.shadowColor = '#00ffff';
+  ctx.shadowBlur = 10;
+  ctx.fillStyle = '#00ffff';
+  ctx.font = 'bold 30px "Segoe UI", Arial, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(`✦ ${score}`, 20, 45);
+
+  if (hasEffect('double')) {
+    const eff = activeEffects.find(e => e.type === 'double');
+    ctx.fillStyle = '#ffcc00';
+    ctx.shadowColor = '#ffcc00';
+    ctx.font = 'bold 18px "Segoe UI", Arial, sans-serif';
+    ctx.fillText(`x2 ${Math.ceil(eff.timer)}s`, 20, 70);
+  }
+
+  ctx.textAlign = 'center';
+  const frozen = hasEffect('freeze');
+  if (frozen) {
+    ctx.fillStyle = '#00ccff';
+    ctx.shadowColor = '#00ccff';
+    const eff = activeEffects.find(e => e.type === 'freeze');
+    ctx.fillText(`❄️ ${Math.ceil(eff.timer)}s`, W / 2, 45);
+  } else {
+    ctx.fillStyle = timeLeft <= 10 ? '#ff3366' : '#ffffff';
+    ctx.shadowColor = timeLeft <= 10 ? '#ff3366' : '#ffffff';
+    ctx.fillText(`${Math.ceil(timeLeft)}s`, W / 2, 45);
+  }
+
+  ctx.textAlign = 'right';
+  ctx.shadowColor = '#ff3366';
+  ctx.fillStyle = '#ff3366';
+  let heartsStr = '';
+  for (let i = 0; i < 5; i++) heartsStr += i < lives ? '❤️' : (i < 3 ? '🖤' : '');
+  ctx.font = '24px Arial';
+  ctx.fillText(heartsStr, W - 20, 45);
+
+  const invY = H - 60;
+  const invStartX = W / 2 - (POWERUP_TYPES.length * 70) / 2;
+  POWERUP_TYPES.forEach((pt, idx) => {
+    const ix = invStartX + idx * 75 + 35;
+    const used = powerupInventory[pt.name] || 0;
+    const remaining = pt.maxUses - used;
+    const available = remaining > 0;
+
+    ctx.save();
+    ctx.globalAlpha = available ? 0.9 : 0.25;
+    ctx.shadowColor = available ? pt.color : '#333';
+    ctx.shadowBlur = available ? 12 : 0;
+
+    ctx.beginPath();
+    ctx.arc(ix, invY, 26, 0, Math.PI * 2);
+    ctx.fillStyle = available ? pt.color + '33' : '#22222266';
+    ctx.strokeStyle = available ? pt.color : '#444';
+    ctx.lineWidth = 2;
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.shadowBlur = 0;
+    ctx.font = '22px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#fff';
+    ctx.fillText(pt.emoji, ix, invY - 1);
+
+    ctx.font = 'bold 12px "Segoe UI", Arial, sans-serif';
+    ctx.fillStyle = available ? pt.color : '#555';
+    ctx.fillText(`${remaining}/${pt.maxUses}`, ix, invY + 36);
+
+    ctx.restore();
+  });
+
+  ctx.restore();
+}
+
+function drawStartScreen() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(10, 10, 26, 0.85)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  ctx.shadowColor = '#00ffff';
+  ctx.shadowBlur = 30;
+  ctx.fillStyle = '#00ffff';
+  ctx.font = `bold ${Math.min(W * 0.1, 72)}px "Segoe UI", Arial, sans-serif`;
+  ctx.fillText('NEON FRUIT', W / 2, H * 0.25);
+
+  ctx.shadowColor = '#ff3366';
+  ctx.shadowBlur = 25;
+  ctx.fillStyle = '#ff3366';
+  ctx.font = `bold ${Math.min(W * 0.08, 56)}px "Segoe UI", Arial, sans-serif`;
+  ctx.fillText('NINJA', W / 2, H * 0.37);
+
+  ctx.shadowColor = '#ffffff';
+  ctx.shadowBlur = 8;
+  ctx.fillStyle = '#aaaacc';
+  ctx.font = `${Math.min(W * 0.032, 20)}px "Segoe UI", Arial, sans-serif`;
+  ctx.fillText('滑动切开水果 · 收集道具 · 躲避炸弹', W / 2, H * 0.49);
+
+  const icons = POWERUP_TYPES.map(p => `${p.emoji} ${p.label}`).join('   ');
+  ctx.fillStyle = '#8888aa';
+  ctx.font = `${Math.min(W * 0.026, 16)}px "Segoe UI", Arial, sans-serif`;
+  ctx.fillText(icons, W / 2, H * 0.56);
+
+  const pulse = 0.7 + Math.sin(Date.now() * 0.005) * 0.3;
+  ctx.globalAlpha = pulse;
+  ctx.shadowColor = '#00ff88';
+  ctx.shadowBlur = 20;
+  ctx.fillStyle = '#00ff88';
+  ctx.font = `bold ${Math.min(W * 0.055, 36)}px "Segoe UI", Arial, sans-serif`;
+  ctx.fillText('[ 点击开始 ]', W / 2, H * 0.7);
+
+  if (bestScore > 0) {
+    ctx.globalAlpha = 0.8;
+    ctx.shadowColor = '#ffcc00';
+    ctx.shadowBlur = 10;
+    ctx.fillStyle = '#ffcc00';
+    ctx.font = `${Math.min(W * 0.035, 22)}px "Segoe UI", Arial, sans-serif`;
+    ctx.fillText(`最高分: ${bestScore}`, W / 2, H * 0.82);
+  }
+  ctx.restore();
+}
+
+function drawGameOver() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(10, 10, 26, 0.9)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  ctx.shadowColor = '#ff3366';
+  ctx.shadowBlur = 30;
+  ctx.fillStyle = '#ff3366';
+  ctx.font = `bold ${Math.min(W * 0.1, 68)}px "Segoe UI", Arial, sans-serif`;
+  ctx.fillText('GAME OVER', W / 2, H * 0.28);
+
+  ctx.shadowColor = '#00ffff';
+  ctx.shadowBlur = 15;
+  ctx.fillStyle = '#00ffff';
+  ctx.font = `bold ${Math.min(W * 0.07, 48)}px "Segoe UI", Arial, sans-serif`;
+  ctx.fillText(`得分: ${score}`, W / 2, H * 0.44);
+
+  if (score >= bestScore && score > 0) {
+    ctx.shadowColor = '#ffcc00';
+    ctx.shadowBlur = 20;
+    ctx.fillStyle = '#ffcc00';
+    ctx.font = `bold ${Math.min(W * 0.04, 28)}px "Segoe UI", Arial, sans-serif`;
+    ctx.fillText('🏆 新纪录!', W / 2, H * 0.54);
+  }
+
+  ctx.shadowColor = '#888';
+  ctx.shadowBlur = 5;
+  ctx.fillStyle = '#888';
+  ctx.font = `${Math.min(W * 0.03, 18)}px "Segoe UI", Arial, sans-serif`;
+  const usedItems = POWERUP_TYPES.filter(p => (powerupInventory[p.name] || 0) > 0)
+    .map(p => `${p.emoji}x${powerupInventory[p.name]}`).join('  ');
+  if (usedItems) ctx.fillText(`使用道具: ${usedItems}`, W / 2, H * 0.62);
+
+  const pulse = 0.7 + Math.sin(Date.now() * 0.005) * 0.3;
+  ctx.globalAlpha = pulse;
+  ctx.shadowColor = '#00ff88';
+  ctx.shadowBlur = 20;
+  ctx.fillStyle = '#00ff88';
+  ctx.font = `bold ${Math.min(W * 0.05, 34)}px "Segoe UI", Arial, sans-serif`;
+  ctx.fillText('[ 再来一局 ]', W / 2, H * 0.75);
+  ctx.restore();
+}
+
+function resetGame() {
+  fruits = [];
+  particles = [];
+  bladeTrail = [];
+  comboTexts = [];
+  ripples = [];
+  sliceHalves = [];
+  activeEffects = [];
+  score = 0;
+  lives = 3;
+  timeLeft = 60;
+  spawnTimer = 0;
+  powerupSpawnTimer = 10 + Math.random() * 5;
+  timerAccum = 0;
+  combo = 0;
+  comboTimer = 0;
+  screenShake = 0;
+  screenFlash = 0;
+  slowMo = 1;
+  slowMoTimer = 0;
+  bgPulse = 0;
+  initPowerups();
+  gameState = 'playing';
+}
+
+function update(dt) {
+  if (gameState !== 'playing') return;
+
+  const effectiveDt = dt * slowMo;
+
+  if (slowMoTimer > 0) {
+    slowMoTimer -= dt;
+    if (slowMoTimer <= 0) { slowMo = 1; slowMoTimer = 0; }
+  }
+
+  activeEffects.forEach(e => { e.timer -= dt; });
+  activeEffects = activeEffects.filter(e => e.timer > 0);
+
+  if (!hasEffect('freeze')) {
+    timerAccum += effectiveDt;
+    if (timerAccum >= 1) {
+      timerAccum -= 1;
+      timeLeft--;
+      if (timeLeft <= 0) {
+        timeLeft = 0;
+        gameState = 'over';
+        if (score > bestScore) bestScore = score;
+      }
+    }
+  }
+
+  comboTimer -= dt;
+  if (comboTimer <= 0) combo = 0;
+
+  if (screenShake > 0) screenShake *= 0.88;
+  if (screenFlash > 0) screenFlash -= dt * 2;
+  if (bgPulse > 0) bgPulse -= dt * 1.5;
+
+  spawnTimer -= effectiveDt;
+  if (spawnTimer <= 0) {
+    const count = 1 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < count; i++) {
+      setTimeout(() => { if (gameState === 'playing') spawnFruit(); }, i * 150);
+    }
+    spawnTimer = 0.8 + Math.random() * 1.0;
+  }
+
+  powerupSpawnTimer -= effectiveDt;
+  if (powerupSpawnTimer <= 0) {
+    spawnPowerup();
+    powerupSpawnTimer = 12 + Math.random() * 8;
+  }
+
+  fruits.forEach(f => {
+    f.vy += GRAVITY * slowMo;
+    f.x += f.vx * slowMo;
+    f.y += f.vy * slowMo;
+    f.rotation += f.rotSpeed * slowMo;
+    if (f.sliced) f.opacity -= 0.06;
+  });
+  fruits = fruits.filter(f => f.y < H + 120 && f.opacity > 0);
+
+  particles.forEach(p => {
+    p.vy += 0.08;
+    p.x += p.vx;
+    p.y += p.vy;
+    p.life -= p.decay;
+  });
+  particles = particles.filter(p => p.life > 0);
+
+  bladeTrail.forEach(b => b.life -= 0.05);
+  bladeTrail = bladeTrail.filter(b => b.life > 0);
+
+  comboTexts.forEach(t => {
+    t.y -= 1.2;
+    t.life -= 0.018;
+  });
+  comboTexts = comboTexts.filter(t => t.life > 0);
+
+  ripples.forEach(r => {
+    r.radius += 3;
+    r.life -= 0.03;
+  });
+  ripples = ripples.filter(r => r.life > 0);
+
+  sliceHalves.forEach(h => {
+    h.vy += GRAVITY * 0.6;
+    h.x += h.vx;
+    h.y += h.vy;
+    h.rotation += h.rotSpeed;
+    h.life -= 0.015;
+  });
+  sliceHalves = sliceHalves.filter(h => h.life > 0 && h.y < H + 100);
+
+  checkSlice();
+}
+
+function drawBackground() {
+  ctx.fillStyle = '#0a0a1a';
+  ctx.fillRect(0, 0, W, H);
+
+  if (bgPulse > 0) {
+    ctx.save();
+    ctx.globalAlpha = bgPulse * 0.15;
+    ctx.fillStyle = bgPulseColor;
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+  }
+
+  const grad = ctx.createRadialGradient(W / 2, H, 0, W / 2, H, H * 1.1);
+  grad.addColorStop(0, 'rgba(20, 0, 60, 0.35)');
+  grad.addColorStop(0.5, 'rgba(10, 5, 30, 0.2)');
+  grad.addColorStop(1, 'rgba(10, 10, 26, 0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  const now = Date.now() * 0.001;
+  bgStars.forEach(s => {
+    const alpha = 0.3 + Math.sin(now * s.speed + s.twinkle) * 0.3;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = '#aabbff';
+    ctx.beginPath();
+    ctx.arc(s.x % W, s.y % H, s.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  });
+}
+
+function draw() {
+  ctx.save();
+
+  if (screenShake > 0.5) {
+    const sx = (Math.random() - 0.5) * screenShake;
+    const sy = (Math.random() - 0.5) * screenShake;
+    ctx.translate(sx, sy);
+  }
+
+  drawBackground();
+  drawRipples();
+  drawSliceHalves();
+
+  particles.forEach(p => {
+    ctx.save();
+    ctx.globalAlpha = p.life;
+    if (p.isJuice) {
+      ctx.shadowColor = p.color;
+      ctx.shadowBlur = 12;
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.radius * p.life, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (p.isSparkle) {
+      ctx.shadowColor = p.color;
+      ctx.shadowBlur = 15;
+      ctx.fillStyle = p.color;
+      const sr = p.radius * (0.5 + p.life * 0.5);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, sr, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.globalAlpha = p.life * 0.6;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, sr * 0.4, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.shadowColor = p.color;
+      ctx.shadowBlur = 8;
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  });
+
+  fruits.forEach(f => drawFruit(f));
+  drawBlade();
+
+  comboTexts.forEach(t => {
+    ctx.save();
+    ctx.globalAlpha = Math.min(t.life, 1);
+    const c = t.color || '#ffcc00';
+    ctx.shadowColor = c;
+    ctx.shadowBlur = 15;
+    ctx.fillStyle = c;
+    ctx.font = `bold ${t.big ? 36 : 28}px "Segoe UI", Arial, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.fillText(t.text, t.x, t.y);
+    ctx.restore();
+  });
+
+  if (screenFlash > 0) {
+    ctx.save();
+    ctx.globalAlpha = screenFlash * 0.3;
+    ctx.fillStyle = screenFlashColor;
+    ctx.fillRect(-50, -50, W + 100, H + 100);
+    ctx.restore();
+  }
+
+  if (slowMo < 1) {
+    ctx.save();
+    ctx.globalAlpha = 0.06;
+    ctx.fillStyle = '#ffcc00';
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+  }
+
+  if (gameState === 'playing') drawUI();
+
+  ctx.restore();
+
+  if (gameState === 'start') drawStartScreen();
+  if (gameState === 'over') drawGameOver();
+
+  if (gameState === 'playing') {
+    ctx.save();
+    ctx.shadowColor = '#00ffff';
+    ctx.shadowBlur = 15;
+    ctx.fillStyle = '#00ffff';
+    ctx.beginPath();
+    ctx.arc(mouseX, mouseY, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 0.3;
+    ctx.beginPath();
+    ctx.arc(mouseX, mouseY, 12, 0, Math.PI * 2);
+    ctx.strokeStyle = '#00ffff';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function loop(ts) {
+  const dt = Math.min((ts - lastTime) / 1000, 0.05);
+  lastTime = ts;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+function handleMove(x, y) {
+  mouseX = x;
+  mouseY = y;
+  if (gameState === 'playing' && isSlicing) {
+    bladeTrail.push({ x, y, life: 1 });
+    if (bladeTrail.length > 30) bladeTrail.shift();
+  }
+}
+
+canvas.addEventListener('mousedown', e => {
+  if (gameState === 'start') { resetGame(); return; }
+  if (gameState === 'over') { resetGame(); return; }
+  isSlicing = true;
+  bladeTrail = [];
+  handleMove(e.clientX, e.clientY);
+});
+canvas.addEventListener('mousemove', e => handleMove(e.clientX, e.clientY));
+canvas.addEventListener('mouseup', () => { isSlicing = false; });
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (gameState === 'start') { resetGame(); return; }
+  if (gameState === 'over') { resetGame(); return; }
+  isSlicing = true;
+  bladeTrail = [];
+  const t = e.touches[0];
+  handleMove(t.clientX, t.clientY);
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const t = e.touches[0];
+  handleMove(t.clientX, t.clientY);
+}, { passive: false });
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  isSlicing = false;
+}, { passive: false });
+
+initPowerups();
+requestAnimationFrame(ts => { lastTime = ts; requestAnimationFrame(loop); });
+</script>
+</body>
+</html>
