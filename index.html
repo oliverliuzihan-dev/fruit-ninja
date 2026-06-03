@@ -77,6 +77,7 @@ let sliceHalves = [];
 let slowMo = 1;
 let slowMoTimer = 0;
 let powerupInventory = {};
+let powerupCollected = {};
 let activeEffects = [];
 let bgPulse = 0;
 let bgPulseColor = '#000';
@@ -97,7 +98,8 @@ initStars();
 
 function initPowerups() {
   powerupInventory = {};
-  POWERUP_TYPES.forEach(p => { powerupInventory[p.name] = 0; });
+  powerupCollected = {};
+  POWERUP_TYPES.forEach(p => { powerupInventory[p.name] = 0; powerupCollected[p.name] = 0; });
 }
 
 function spawnFruit() {
@@ -236,10 +238,22 @@ function lineCircleIntersect(x1, y1, x2, y2, cx, cy, r) {
   return (t1 >= 0 && t1 <= 1) || (t2 >= 0 && t2 <= 1) || (t1 < 0 && t2 > 1);
 }
 
-function activatePowerup(type) {
+function collectPowerup(type) {
   const pt = POWERUP_TYPES.find(p => p.name === type);
   if (!pt) return;
+  if (powerupCollected[type] >= pt.maxUses) return;
+  powerupCollected[type]++;
   powerupInventory[type]++;
+  comboTexts.push({ x: W / 2, y: H * 0.5, text: `${pt.emoji} 获得${pt.label}! 按[${POWERUP_TYPES.indexOf(pt) + 1}]使用`, life: 1.5, big: true, color: pt.color });
+  spawnSparkle(W / 2, H * 0.5, pt.color);
+  screenFlash = 0.3; screenFlashColor = pt.color;
+}
+
+function usePowerup(type) {
+  if (gameState !== 'playing') return;
+  const pt = POWERUP_TYPES.find(p => p.name === type);
+  if (!pt || powerupInventory[type] <= 0) return;
+  powerupInventory[type]--;
 
   if (type === 'freeze') {
     activeEffects = activeEffects.filter(e => e.type !== 'freeze');
@@ -304,7 +318,7 @@ function checkSlice() {
           if (score > bestScore) bestScore = score;
         }
       } else if (f.isPowerup) {
-        activatePowerup(f.powerupType);
+        collectPowerup(f.powerupType);
         spawnSparkle(f.x, f.y, f.color);
         addRipple(f.x, f.y, f.color);
       } else {
@@ -526,9 +540,8 @@ function drawUI() {
   const invStartX = W / 2 - (POWERUP_TYPES.length * 70) / 2;
   POWERUP_TYPES.forEach((pt, idx) => {
     const ix = invStartX + idx * 75 + 35;
-    const used = powerupInventory[pt.name] || 0;
-    const remaining = pt.maxUses - used;
-    const available = remaining > 0;
+    const charges = powerupInventory[pt.name] || 0;
+    const available = charges > 0;
 
     ctx.save();
     ctx.globalAlpha = available ? 0.9 : 0.25;
@@ -550,9 +563,13 @@ function drawUI() {
     ctx.fillStyle = '#fff';
     ctx.fillText(pt.emoji, ix, invY - 1);
 
-    ctx.font = 'bold 12px "Segoe UI", Arial, sans-serif';
+    ctx.font = 'bold 14px "Segoe UI", Arial, sans-serif';
     ctx.fillStyle = available ? pt.color : '#555';
-    ctx.fillText(`${remaining}/${pt.maxUses}`, ix, invY + 36);
+    ctx.fillText(`[${idx + 1}]`, ix, invY - 30);
+
+    ctx.font = 'bold 13px "Segoe UI", Arial, sans-serif';
+    ctx.fillStyle = available ? '#ffffff' : '#555';
+    ctx.fillText(`x${charges}`, ix, invY + 36);
 
     ctx.restore();
   });
@@ -584,7 +601,7 @@ function drawStartScreen() {
   ctx.shadowBlur = 8;
   ctx.fillStyle = '#aaaacc';
   ctx.font = `${Math.min(W * 0.032, 20)}px "Segoe UI", Arial, sans-serif`;
-  ctx.fillText('滑动切开水果 · 收集道具 · 躲避炸弹', W / 2, H * 0.49);
+  ctx.fillText('滑动切开水果 · 收集道具 · 按1-4使用 · 躲避炸弹', W / 2, H * 0.49);
 
   const icons = POWERUP_TYPES.map(p => `${p.emoji} ${p.label}`).join('   ');
   ctx.fillStyle = '#8888aa';
@@ -954,6 +971,14 @@ canvas.addEventListener('touchend', e => {
   e.preventDefault();
   isSlicing = false;
 }, { passive: false });
+
+window.addEventListener('keydown', e => {
+  if (gameState !== 'playing') return;
+  const key = parseInt(e.key);
+  if (key >= 1 && key <= POWERUP_TYPES.length) {
+    usePowerup(POWERUP_TYPES[key - 1].name);
+  }
+});
 
 initPowerups();
 requestAnimationFrame(ts => { lastTime = ts; requestAnimationFrame(loop); });
